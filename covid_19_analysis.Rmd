@@ -1,0 +1,430 @@
+---
+title: "Analisa dan Prediksi COVID-19"
+subtitle: "Melakukan Analisa Menggunakan R dan Algoritma ML Prophet"
+author: "Faris Dzikrur Rahman"
+date: "`r Sys.Date()`"
+output:
+  tufte::tufte_html: default
+---
+
+```{r setup, include=FALSE}
+library(tufte)
+# invalidate cache when the tufte version changes
+knitr::opts_chunk$set(tidy = FALSE, cache.extra = packageVersion('tufte'))
+options(htmltools.dir.version = FALSE)
+```
+
+# Pendahuluan
+
+Novel coronavirus atau yang sekarang dinamai COVID-19 adalah virus menular yang menyebabkan gangguan pada pernafasan. Virus ini telah diidentifikasikan sebagai agen utama merebaknya coronavirus di Wuhan pada tahun 2019-20 yang sampai hari ini terus terjadi.
+
+Seperti yang terjadi pada beberapa kasus awal kemunculan penyakit ini yang dipekirakan terkait erat dengan adanya pasar hewan laut dan hewan lainnya yang cukup besar, virus ini disinyalir memiliki akar dari hewan-hewan tersebut, namun hal ini belum dapat dikonfirmasi. Ketika dibandingkan, susunan genetika dari virus ini ternyata memiliki kemiripan dengan virus semisal SARS-CoV (79.5%) dan bat coronaviruses (96%), yang membuat virus ini sangat mungkin berasal dari kelelawar.
+
+Kasus pertama pada manusia terjadi pada 8 Desember 2019. Wabah COVID-19 terdeteksi pertama kali di Wuhan, China, pada pertengahan Desember 2019. Virus ini kemudian menyebar ke seluruh provinsi di Cina dan ke lebih dari 20 negara lainnya di Asia, Eropa, Amerika Utara, dan Oseania. Penularan virus dari manusia ke manusia pertama kali telah dikonfirmasi terjadi di Cina, Jerman, Thailand, Taiwan, Jepang, dan Amerika Serikat, dan sekarang penularan ini sudah semakin masif dan hampir keseluruhannya merupakan dari manusia ke manusia, termasuk pula yang terjadi pada Italia dan Iran.
+
+Per 4 Maret 2020, dimana artikel ini ditulis, 95000 lebih orang telah dinyatakan positif COVID-19, dimana sebagian besarnya berada di Cina. Kasus yang terjadi di luar Cina, sampai saat ini adalah mereka yang baru saja pulang dari Wuhan, atau berinteraksi dengan orang-orang yang baru saja ke Wuhan. Jumlah kematian hingga 4 Maret 2020 ini  adalah sejumlah 3000 lebih orang.
+
+Setelah merebaknya kasus ini, sudah banyak data-data statistik mengenai kasus ini yang dibuka untuk publik, salah satunya adalah yang dirilis oleh John Hopkins University, yang merupakan data kasus COVID-19 di seluruh negara yang direkam per hari. 
+
+Data ini akan dianalisa menggunakan software R, dengan memanfaatkan framework tidyverse, yang mencakup library-library untuk memudahkan proses data cleaning, data munging, visualisasi, dan modeling.
+
+Hal pertama yang akan kita lakukan adalah meng-import library dan package yang akan digunakan pada laporan ini.
+
+```{r, error=FALSE,warning=FALSE,message=FALSE}
+library(tidyverse)
+
+library(data.table)
+
+library(bbplot)
+```
+
+Sebelum melakukan analisa data secara eksploratif, kita wajib mengetahui karakteristik data kita. Dari penelusuran di bawah, diketahui bahwa ada kolom yang masih belum sesuai tipe datanya dengan yang seharusnya, sehingga harus dirubah agar memudahkan analisa. Salah satunya adalah kolom Date yang masih bertipe character, sehingga harus dirubah menjadi tipe date time. 
+
+```{r, error=FALSE}
+covid <- read_csv("corona-virus-report (1)/covid_19_clean_complete.csv")
+conf_rw <- read_csv("novel-corona-virus-2019-dataset (2)/COVID19_line_list_data.csv")
+
+str(covid)
+```
+
+Penamaan kolom sangatlah penting sehingga penamaan kolom diganti dengan yang lebih pendek dan sederhana. 
+
+```{r}
+covid <- covid %>% rename(STATE = `Province/State`, COUNTRY = `Country/Region`, LAT = Lat, LONG = Long, DATE = Date, CONFIRMED = Confirmed, DEATH = Deaths, RECOVERED = Recovered)
+
+covid
+
+write_csv(x = head(covid), path = "covid.csv")
+```
+
+Kolom tanggal dengan format character/string akan kita ganti dengan datetime
+
+```{r}
+covid$DATE <- as.Date(covid$DATE, format = "%m/%d/%y")
+
+covid
+
+str(covid)
+```
+
+Setelah melakukan data cleaning, kita akan mulai mengeksplorasi data untuk mengetahui trend dan kondisi terkini dari virus yang sangat mewabah ini.
+
+```{r}
+summary_all <- covid %>% group_by(DATE) %>% summarize(CONFIRMED=sum(CONFIRMED), DEATH=sum(DEATH),RECOVERED=sum(RECOVERED))
+
+summary <- summary_all %>% arrange(desc(DATE))
+
+head(summary, 1)
+```
+
+Kita lihat per 4 Maret 2020, sudah ada 95124 jiwa yang positif Corona, jumlah yang sangat fantastis. Angka kematian juga sangat tinggi dan meningkat drastis dibandingkan awal tahun 2020 dengan 3524 orang. Namun, mereka yang sembuh juga sangat banyak, mencapai 51171 orang. Berbagai laporan mengatakan bahwa angka kematian virus ini jauh melampaui SARS dan MERS, namun angka kesembuhan juga jauh melampaui kedua virus tersebut. 
+
+# Exploratory Data Analysis
+
+Hal pertama yang akan kita analisa adalah perbandingan angka positif, angka kematian, dan angka kesembuhan dari masing-masing negara. Namun, kita akan mengelompokkan negara-negara ini menjadi tiga kelompok, yaitu 'Hubei', dimana merupakan provinsi di Cina dengan kasus positif tertinggi, 'provinsi Cina lainnya', dan negara lain selain Cina. Namun pada tabel belum ada kolom yang mengelompokkan ketiganya sehingga kita akan membuat fungsi untuk memisahkan country dan state menjadi tiga kelompok.
+
+```{r}
+location_df <- function(row) {
+  if (row["COUNTRY"] == "Mainland China") {
+    if (row["STATE"] == "Hubei") {
+      return("Hubei")
+    } else {
+      return("Other Chinese Provinces")
+    } 
+  } else {
+    return("Rest of the World")
+  }
+}
+```
+
+Untuk menjaga data covid agar tidak berubah, maka kita akan meng-assign variabel baru yang akan kita rubah untuk analisa.
+
+```{r}
+temp <- covid
+```
+
+Buat kolom baru bernama 'SEGMENT' dengan mengaplikasikan fungsi yang sudah kita buat pada data frame.
+
+```{r}
+temp["SEGMENT"] <- apply(temp, 1, location_df)
+
+temp
+
+write_csv(x = head(temp), path = "temp.csv")
+```
+
+## Visualisasi Positif COVID-19
+
+Sebelum melakukan visualisasi, kita akan mempersiapkan tabel yang dikelompokkan berdasarkan tanggal / per hari sehingga kita dapat mengetahui trend harian.
+
+```{r}
+temp_conf <- temp %>% group_by(DATE,SEGMENT) %>% summarize(CONFIRMED=sum(CONFIRMED))
+
+temp_conf
+
+write_csv(x = head(temp_conf), path = "temp_conf.csv")
+```
+
+Lalu kita menggunakan ggplot untuk memvisualisasi data yang kita miliki. Dari grafik di bawah ini dapat dilihat bahwa Hubei memiliki trend yang terus naik, meskipun pada pertengahan Februari tampak stagnan, namun sampai awal Maret trendnya meningkat kembali. Sementara pada provinsi Cina lainnya, angka positif cenderung stagnan hingga awal Maret. Negara-negara lain yang masih sangat sedikit kasus positifnya sebelum Maret menunjukkan peningkatan yang cukup tinggi di awal Maret, melampaui provinsi di Cina. Hal ini mungkin disebabkan mulai terdeteksinya mereka yang berinteraksi langsung dengan warga Cina dan sekitarnya. 
+
+```{r,error=FALSE,warning=FALSE}
+plot_conf <- ggplot(temp_conf, aes(x=DATE, y=CONFIRMED, color=SEGMENT)) +
+  geom_line(size=1) +
+  labs(x = "", 
+       y = "Confirm Case", 
+       title = "Confirmed Cases", 
+       subtitle = "Around the World") +
+  bbc_style()
+
+plot_conf
+```
+
+
+## Visualisasi Kematian COVID-19
+
+Untuk kematian, kita juga mengelompokkan data menjadi per hari agar dapat mengetahui trend harian dari kematian dari awal kasus hingga bulan Maret. Dari grafik di bawah, tampak bahwa kasus kematian terbesar ada pada Hubei yang terus meningkat. Kasus kematian dunia yang tidak menunjukkan kenaikan awalnya, mulai naik di awal Maret seiring dengan meningkatnya jumlah pasien yang positif terjangkit Corona. Sementara di wilayah provinsi Cina lainnya, angkanya stagnan dan cenderung menurun. 
+
+```{r,error=FALSE,warning=FALSE}
+temp_death <- temp %>% group_by(DATE,SEGMENT) %>% summarize(DEATH=sum(DEATH))
+
+plot_death <- ggplot(temp_death, aes(x=DATE, y=DEATH, color=SEGMENT)) +
+  geom_line(size=1) +
+   labs(x = "", 
+       y = "Death Cases", 
+       title = "Death Cases", 
+       subtitle = "Around the World") +
+  bbc_style()
+
+plot_death
+```
+
+
+# Visualisasi Angka Kesembuhan COVID-19
+
+Meskipun Hubei merupakan provinsi di Cina dengan angka positif dan kematian tertinggi dan terus meningkat, namun hal ini juga diimbangi dengan angka kesembuhan yang juga tinggi dan semakin meningkat. Peningkatan ini juga dialami oleh provinsi di luar Hubei. Negara-negara selain Cina masih tampak stagnan angka kesembuhannya meskipun sudah mulai ada kecenderungan sedikit naik. Hal ini mungkin juga disebabkan karena Coronavirus baru merebak sekitar beberapa hari sehingga membutuhkan waktu yang lebih lama untuk dapat sembuh. Pemantauan harus dilakukan beberapa hari ke depan untuk melihat angka kesembuhannya.
+
+```{r,warning=FALSE}
+temp_rec <- temp %>% group_by(DATE,SEGMENT) %>% summarize(RECOVERED=sum(RECOVERED))
+
+plot_rec <- ggplot(temp_rec, aes(x=DATE, y=RECOVERED, color=SEGMENT)) +
+  geom_line(size=1) +
+   labs(x = "", 
+       y = "Recovered Cases", 
+       title = "Recovered Cases", 
+       subtitle = "Around the World") +
+  bbc_style()
+
+plot_rec
+
+```
+
+Agar kita dapat mengetahui angka kematian dan kesembuhan dengan lebih baik tanpa ada bias dikarenakan jumlah penduduk yang berbeda-beda di masing-masing tiga kelompok negara, maka kita akan melakukan visualisasi rasio kematian dan kesembuhan dengan membaginya dengan angka yang terkonfirmasi positif COVID-19. 
+
+# Rasio Kematian
+
+Untuk melakukan visualisasi rasio kematian, kita membutuhkan kolom tambahan yang akan kita isi dengan nilai rasio kematian, yaitu persentase angka kematian dan angka positif.
+
+Dari hasil visualisasi / grafik di bawah, kita dapat melihat bahwa rasio kematian yang sempat menurun pada pertengahan Februari di Hubei, kembali menunjukkan peningkatan hingga awal Maret ini. Hal ini harus menjadi kewaspadaan dari pemerintah Cina sehingga rasio ini dapat kembali turun. Peningkatan cukup signifikan juga terjadi pada negara-negara selain Cina. Meskipun rasionya sangat rendah yaitu sekitar 2-4%, namun kenaikan ini haruslah menjadi alarm dini agar angka ini tidak semakin naik dan membuat penyakit ini menjadi pandemik.
+
+```{r,warning=FALSE}
+temp_death_conf <- temp %>% group_by(DATE, SEGMENT) %>% summarize(DEATH=sum(DEATH),CONFIRMED=sum(CONFIRMED))
+
+temp_death_rate <- temp_death_conf %>% mutate(DEATHRATE = 100*(DEATH / CONFIRMED))
+
+plot_death_rate <- ggplot(temp_death_rate, aes(x=DATE, y=DEATHRATE, color=SEGMENT)) +
+  geom_line(size=1) +
+   labs(x = "", 
+       y = "Rate", 
+       title = "COVID-19 Death Rate", 
+       subtitle = "Around the World") +
+  bbc_style()
+
+plot_death_rate
+```
+
+Sama seperti pada rasio kematian, kita juga membutuhkan kolom tambahan yang menyimpan nilai persentase antara angka kesembuhan dan angka positif. Dari hasil visualisasi di bawah, terlihat bahwa meskipun angka rasio kematian di Hubei meningkat, namun rasio kesembuhan juga semakin meningkat. Di provinsi Cina lain menunjukkan trend yang menggembirakan dengan meningkatnya angka kesembuhan di tengah angka kematian yang juga stagnan cenderung menurun. Namun pada negara selain Cina, angka kesembuhan menunjukkan penurunan, dikarenakan jumlah positif yang semakin meningkat baru-baru ini, sehingga masih membutuhkan waktu untuk dapat dilihat kembali angka ksembuhannya.
+
+```{r,warning=FALSE}
+temp_rec_conf <- temp %>% group_by(DATE, SEGMENT) %>% summarize(RECOVERED=sum(RECOVERED),CONFIRMED=sum(CONFIRMED))
+
+temp_rec_rate <- temp_rec_conf %>% mutate(RECRATE = 100*(RECOVERED / CONFIRMED))
+
+plot_rec_rate <- ggplot(temp_rec_rate, aes(x=DATE, y=RECRATE, color=SEGMENT)) +
+  geom_line(size=1) +
+   labs(x = "", 
+       y = "Rate", 
+       title = "COVID-19 Recovery Rate", 
+       subtitle = "Around the World") +
+  bbc_style()
+
+plot_rec_rate
+```
+
+Setelah kita mendapatkan insight melalui visualisasi dari data yang kita miliki, tahapan selanjutnya akan mengenai bagaimana dengan data harian ini, kita dapat membuat forecast basic / dasar dengan menggunakan algoritma machine learning yang dibangun oleh Data Scientist Facebook yang diberi nama Prophet. Prophet bekerja dengan menggunakan data time series yang mereka klaim memiliki tingkat akurasi prediksi yang cukup tinggi. 
+
+# Forecast Menggunakan Algoritma Machine Learning Prophet
+
+Untuk mengaplikasikan algoritma ini ke data yang kita miliki, kita menggunakan package "prophet".
+
+```{r}
+# install.packages("prophet")
+
+library(prophet)
+```
+
+## Menyiapkan Data
+
+Selanjutnya, kita mempersiapkan data yang dibutuhkan untuk proses modeling. Prophet hanya membutuhkan dua nilai di dalam satu tabel data frame, yaitu kolom yang berisikan waktu/tanggal/hari dan kolom yang berisikan suatu value yang akan kita prediksi. Dalam hal ini kita ingin memprediksi angka positif dalam sebulan ke depan. Maka kita mengisi kolom tersebut dengan angka positif dari data harian yang kita miliki. Dikarenakan Prophet hanya menerima kolom dengan nama "ds" dan "y", maka kita harus mengganti nama kolom yang kita miliki. "ds" berisikan waktu, sedangkan "y" berisikan value / nilai.
+
+```{r}
+temp_prophet <- temp %>% group_by(DATE) %>%  summarize(CONFIRMED=sum(CONFIRMED))
+temp_prophet <- temp_prophet %>% rename(ds = DATE, y = CONFIRMED)
+temp_prophet_death <- temp %>% group_by(DATE) %>%  summarize(DEATH=sum(DEATH))
+temp_prophet_death <- temp_prophet_death %>% rename(ds = DATE, y = DEATH)
+
+temp_prophet
+temp_prophet_death
+
+write_csv(x = head(temp_prophet), path = "temp_prophet.csv")
+write_csv(x = head(temp_prophet_death), path = "temp_prophet_death.csv")
+
+```
+
+## Membuat Model
+
+### Prediksi Positif COVID-19
+
+Setelah data yang berisikan dua kolom, "ds" dan "y" siap, kita akan mulai membuat model.
+
+Pertama, kita membuat instance dengan variabel "m" 
+
+```{r}
+m <- prophet(temp_prophet)
+```
+
+Setelah itu, kita membuat dataframe baru yang menampung nilai masa depan / nilai prediksi, dimana kali ini kita prediksi 1 bulan ke depan, artinya kita isi periode selama 30 hari. Disini kita gunakan function yang sudah tersedia pada library prophet yaitu `make_future_dataframe()`.
+
+```{r}
+future <- make_future_dataframe(m, periods = 30)
+tail(future)
+```
+
+Selanjutnya, kita melakukan prediksi dengan `predict()` menggunakan data "m" dan data "future".
+
+```{r}
+forecast <- predict(m, future)
+```
+
+Berikut ini adalah nilai akhir dari prediksi yang kita lakukan, yaitu 30 hari setelah data terakhir yang kita miliki.
+
+```{r}
+forecasted_conf <- forecast %>%
+  arrange(desc(ds)) %>%
+  slice(1) %>%
+  pull(yhat) %>%
+  round()
+
+forecasted_conf
+```
+
+Visualisasi juga perlu dilakukan agar hasil prediksi dapat terlihat dengan jelas.
+
+```{r,warning=FALSE}
+forecast_p <- plot(m, forecast) + 
+  labs(x = "", 
+       y = "confirmed case", 
+       title = "Projected Confirmed", 
+       subtitle = "To Next Month") + bbc_style()
+
+forecast_p
+```
+
+Dari hasil prediksi tersebut, kita dapat melihat bahwa jika trend ini terus meningkat, angka positif terjangkit COVID-19 dapat meningkat hingga 150.000 jiwa di bulan April. Namun, tentunya dikarenakan data historis yang kita miliki sangat sedikit, ini tidak bisa dijadikan acuan pasti. Untuk memprediksi masa depan, kita harus memiliki data historis yang mencukupi. 
+
+### Prediksi Angka Kematian COVID-19 
+
+Kita juga akan memprediksi angka kematian COVID-19 dalam sebulan ke depan, yaitu 30 hari. 
+
+Pertama, buat instance "m_death" dengan fungsi `prophet()`
+
+```{r}
+m_death <- prophet(temp_prophet_death)
+```
+
+Setelah itu, buat tabel baru berisikan nilai prediksi masa depan selama 30 hari ke depan.
+
+```{r}
+future_death <- make_future_dataframe(m_death, periods = 30)
+tail(future_death)
+```
+
+Prediksi dilakukan menggunakan instance "m_death" dan dataframe "future_death".
+
+```{r}
+forecast_death <- predict(m_death, future_death)
+```
+
+Berikut adalah angka prediksi kematian setelah 30 hari.
+
+```{r}
+forecasted_death <- forecast_death %>%
+  arrange(desc(ds)) %>%
+  slice(1) %>%
+  pull(yhat) %>%
+  round()
+
+forecasted_death
+```
+
+Untuk dapat melihat trendnya dengan jelas, kita lakukan visualisasi data tersebut.
+
+```{r,warning=FALSE}
+forecast_p_death <- plot(m_death, forecast_death) + 
+  labs(x = "", 
+       y = "death case", 
+       title = "Projected Death", 
+       subtitle = "To Next Month") + bbc_style()
+
+forecast_p_death
+```
+
+Dapat terlihat dari visualisasi tersebut bahwa angka kematian juga akan semakin meningkat selama 30 hari ke depan dikarenakan trend historis yang juga semakin meningkat. Menurut model ini, angka kematian akan naik sampai mencapai 5000 pada bulan April. Tentunya kita membutuhkan data historis yang lebih banyak untuk mencapai akurasi yang diinginkan. 
+
+Sebagai tambahan, berikut adalah plot trend harian dan mingguan pada angka terkonfirmasi positif. 
+
+```{r}
+prophet_plot_components(m, forecast)
+```
+
+# Kesimpulan
+
+Dari data yang telah diolah pada laporan ini, hasilnya menunjukkan bahwa COVID-19 belum menunjukkan tanda-tanda penurunan yang berarti, bahkan dari hasil prediksi tampak trend yang semakin naik dalam sebulan ke depan. Setiap negara haruslah memiliki concern dan aksi nyata yang dapat mengurangi penyebaran virus ini sehingga trend tersebut dapat dipatahkan. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
